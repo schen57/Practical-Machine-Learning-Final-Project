@@ -1,0 +1,180 @@
+---
+title: "Practical Machine Learning Final Project"
+author: "Shengyu Chen"
+date: "April 17, 2016"
+output: html_document
+---
+
+##Project Overview
+The final project's data source comes from http://groupware.les.inf.puc-rio.br/har. 
+The data has already been divided into a training dataset and a testing dataset. However, the testing dataset is for the graded quiz. The training and testing of the model can only be applied within the training dataset. The training dataset has 19622 obs and 160 variables. The dependent variable is the classe variable. This is the activity that each individual takes and tracked by the activity tracker. The purpose of this exercise is to understand and build a model that best classify and predict how different categories would impact the individuals' actual activity. 
+
+Originally, I planned to run multiple models to predict and compare different performances of these models. However, due to computational constriants, not all models can be materialized or computed. I have selected the best and most robust model in this study that has a relatively high accuracy while not taking too long to run. 
+
+##Setting Up the analytics environment
+```{r}
+trainUrl="https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+validateUrl="https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+training=read.csv(trainUrl)
+validating=read.csv(validateUrl)
+```
+
+
+##Setting up the K-fold cross validation sets within the training set
+The purpose behind the K-fold cross validation is to validate the models so that the bias from the model estimates is reduced. However, in every estimate situation, there's a bias-variance trade off. That is, the two characteristics of the model estimates are negatively correlated. Usually, if statistical or model algorithms are employed to reduce bias from the model then the variance of the estimates inadvertently increase. This applies to the K-fold cross validation procedure. The more folds we create, the higher the variance while reducing the bias. There's no set answer in how many folds should be created but in the spirit of prudence and convention, I originally chose to do a 10 fold cross validation on the training set while using the testing set to validate my model estimates.However, that 10 fold cross validation process was too computationally expensive. My computer's existing ram wasn't able to handle it in a cost efficient manner. So I just decided to do a simple 60% by 40% train vs testing process. Then use the validation set to test out each.
+```{r}
+library(caret)
+trainingIndex<-createDataPartition(training$classe,p=0.5,list=T)
+trainingtrain<-training[trainingIndex[[1]],]
+trainingtest<-training[-trainingIndex[[1]],]
+```
+
+
+##Exploratory Analysis Overview
+Before any formal model buliding process, it is important to explore the characteristics of the data set so that we can understand more about the data set and use that information to our model building efforts. Since the validation set has already been separated out, we will conduct the exploratory analysis on the training set altogether. 
+The goal of the exploratory analysis is the following:  
+1. Basic Characteristics/distributions about the data set 
+2. Basic Data Adjustments/Transformations
+2. Missing Data/ Data Gaps etc.  
+3. Relationships between different predictors 
+4. Multicolinearity/colinearity between the various predictors
+
+##Basic Characteristic of the training data set
+
+```{r}
+dim(training)
+names(training)
+##Number of Users
+length(unique(training$user_name))
+##And they are
+unique(training$user_name)
+str(training)
+##It seems that the converted timestamp variable is a factor. We will convert it into time variable 
+##We will also do the same for testing dataset
+library(lubridate)
+training$cvtd_timestamp<-dmy_hm(training$cvtd_timestamp)
+##Time period during which the data was collected 
+max(unique(training$cvtd_timestamp)[order(unique(training$cvtd_timestamp))])-min(unique(training$cvtd_timestamp)[order(unique(training$cvtd_timestamp))])
+library(ggplot2)
+ggplot(aes(wday(cvtd_timestamp),fill=user_name),data=training)+geom_histogram()+ggtitle("Data Collected on each week day by person")
+ggplot(aes(cvtd_timestamp,fill=user_name),data=training)+geom_histogram()+ggtitle("Data Collected on each date by person")
+
+temp<-data.frame(table(training$user_name,training$cvtd_timestamp))
+names(temp)<-c("Name","Datetime","Count")
+temp<-temp[which(temp[,3]!=0),]
+ggplot(aes(x=temp[,2],y=temp[,3],fill=Name),data=temp)+geom_bar(stat="identity",position="stack")+theme(axis.text.x = element_text(angle = 90, hjust = 1),legend.position="top")+ylab("count")+xlab("Date Time")+ggtitle("Number of Records collected by different individuals ")
+
+```
+From here, we have observed that each day, only one individual's data was collected for any given day. We also observed that 3 individuals data were collected on a Tuesday and 2 individuals' data were collected on a Saturday. Only Jeremy's data was collected on a Thursday.
+
+
+##Missing Data Situation of the data set
+From simply viewing the dataset, we can see that a lot of the cells are empty. The following is a brief analysis of the missing data situation
+```{r}
+missing=training[1,]
+for (i in 1:ncol(training)){
+missing[,i]<-sum(is.na(training[,i]))
+}
+missingIndex<-which(missing[1,]!=0)
+missing1<-missing[,which(missing[1,]!=0)]
+```
+From the above we can see that there are 67 variables that have completely missing values. That's 41% of the total number of predictors. In building our model, it is important that we don't include these variables at all. 
+
+##Checking the correlation matrix between the existing non-missing predictors 
+```{r,cache=T}
+library(corrgram)
+corrgram(training[,c(-missingIndex,-160)])
+
+```
+From the above computations and after removing the missing value columns as well as the dependent classe variable, we can see that the matrix has some pockets of negative and postiive correlations that are significant. Although the correlation matrix is not a robust method of detecting multicolinearity, it serves a good visual aid to understanding the movement of existing predictors. We see that the darkly shaded red and blue represents an absolute value of the r squared of greater than 0.9. Generally, a r squared of greater than 0.5 should pose some concern. However, it is premature to take out these variables before the more rebust model beuliding process. We will address the multicolinearity concern later in the model building, diagnostic section. 
+
+##Model Building Process 
+I have detected that many predictors have missing values. We will take out the these missing value preidctors in our model building process. In addition, in our validation set, we will also take out these predictors later. 
+
+I will use the 10 fold cross validation for every algorithm and find the average accuracy from these 10 fold process. 
+
+My general strategy here is to run as many models as possible. I am planning on using the following list of alogrithms as well as testing several ensemble algorithms.
+1. Decision Tree Algorithm (Rpart)
+2. Gradient Boosting Machine Algorithm (GBM)
+3. Random Forest (RF)
+4. Support Vector Machine
+
+
+```{r,cache=T}
+library(caret)
+nonpredindex<-c(1,2,3,4,5)
+nonpredindex<-c(nonpredindex,missingIndex)
+trainingtrain<-trainingtrain[,-nonpredindex]
+trainingtest<-trainingtest[,-nonpredindex]
+validating<-validating[,-nonpredindex]
+
+```
+
+
+##Gradient Boosting Machine Model 
+The gradient boosting machine model is usually the most accuracy while takes a lot longer to train than randomForest model. There are three parameters need to be tuned to model the dataset so that the accuracy of the model is optimized. Because of the computational complexity of the model in the number of trees required to model. I will use the loop to tune the number of trees grown parameter to arrive at the most accurate model. The best model from running the model tunining exercise is as high as growing 10,000 trees. However, as observed from the n.trees vs accuracy graph, we can see that the margin improvement in growing more trees diminishes dramatically after n=3000. It seems that growing 3000 trees is good enough in generating accruate enough models for the task. 
+
+Due to the fact that running the model tuning took more than 2 hours of computation. I will directly input a GBM model with growing only 3500 trees and output the result.The most accurate model has an accuracy of 98.1%. That is quite good for the testing set. 
+
+From the summary we can see that not all the variables are useful, in fact that there are only 67 of these variables that have non-zero impact on the model prediction accuracy.We will use this information to further our analysis.
+```{r,cache=T}
+#The Following is the tuting algorithm
+#library(gbm)
+#loop<-c(seq(from=1000, to=10000,by=1000))
+#accuracy=data.frame(rep(0,10),rep(0,10),rep(0,10))
+#names(accuracy)<-c("n.trees","Testing Accuracy","Training Accuracy")
+#for (i in (1:10)){
+#modelGBM<-gbm(classe~.,data=trainingtrain,distribution="multinomial",n.trees=loop[i],shrinkage=0.01)
+#predGBM<-predict(modelGBM,trainingtest,n.trees=loop[i],type="response")
+#predOrg<-predict(modelGBM,trainingtrain,n.trees=loop[i],type="response")
+#p.predGBM <- apply(predGBM, 1, which.max)
+#p.predOrg<-apply(predOrg,1,which.max)
+#p.predGBM<-factor(p.predGBM)
+#p.predOrg<-factor(p.predOrg)
+#levels(p.predGBM)<-c("A","B","C","D","E")
+#levels(p.predOrg)<-c("A","B","C","D","E")
+#accuracy[i,1]=loop[i]
+#accuracy[i,2]=confusionMatrix(p.predGBM,trainingtest$classe)$overall[[1]]
+#accuracy[i,3]=confusionMatrix(p.predOrg,trainingtrain$classe)$overall[[1]]
+#print (i)
+#}
+
+
+
+#library(reshape2)
+#accuracy=melt(data=accuracy,id=c("n.trees"))
+#g=ggplot(data=accuracy,aes(x=n.trees,y=value,color=variable))+geom_line(size=2)+ggtitle("GBM Classification #Accuracy by number of trees grown in Testing and Training Data Set")+ylab("Number of Trees #Grown")+xlab("Model Accuracy on the Testing Set")
+#g
+
+library(gbm)
+modelGBM<-gbm(classe~.,data=trainingtrain,distribution="multinomial",n.trees=3500,shrinkage=0.01)
+p.predGBM<-predict(modelGBM,trainingtest,n.trees=3500,type="response")
+p.predGBM<-apply(p.predGBM,1,which.max)
+p.predGBM<-factor(p.predGBM)
+levels(p.predGBM)<-c("A","B","C","D","E")
+confusionMatrix(p.predGBM,trainingtest$classe)
+#Validating the model using validation
+v.predGBM<-predict(modelGBM,validating,n.trees=3500,type="response")
+v.predGBM <- apply(v.predGBM, 1, which.max)
+v.predGBM<-factor(v.predGBM)
+levels(v.predGBM)<-c("A","B","C","D","E")
+summary(modelGBM)
+v.predGBM
+
+```
+
+
+In addition to GBM, I have also tried running regression trees algorithm on the data set as well as the multinomial logistic regression and the randomForest algorithm.All of these algorithms took more than couple of hours to run and my computer would freeze up. GBM algorithm was the only one that I was able to successfully run on the training and test data sets. With this being said, I will run the random forest model on a even small sample size and test the model on the remaining data set. 
+
+##Random Forest Algorithm
+
+```{r,cache=T}
+#rfindex<-createFolds(y=training$classe,k=5,returnTrain=F)
+#trainingtrainrf<-training[rfindex[[1]],]
+#trainingtestrf<-training[-rfindex[[1]],]
+#trainingtrainrf<-trainingtrainrf[,-nonpredindex]
+#trainingtestrf<-trainingtestrf[,-nonpredindex]
+#modelRF<-train(trainingtrainrf$classe~.,data=trainingtrainrf,method="rf",trControl=trainControl(method = "cv", number = 3))
+#predRF<-predict(modelRF,trainingtestrf)
+```
+
